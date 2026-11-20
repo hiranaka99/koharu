@@ -3,8 +3,9 @@
 //! method's composition through CEF's IME calls.
 
 use tauri_runtime_cef::cef::{
-    BrowserHost, CefString, CompositionUnderline, CompositionUnderlineStyle, ImplBrowserHost as _,
-    KeyEvent as CefKeyEvent, KeyEventType, Range, sys::cef_event_flags_t,
+    BrowserHost, CefString, CompositionUnderline, CompositionUnderlineStyle, ImplBrowser as _,
+    ImplBrowserHost as _, ImplFrame as _, KeyEvent as CefKeyEvent, KeyEventType, Range,
+    sys::cef_event_flags_t,
 };
 use winit::{
     event::{ElementState, Ime, KeyEvent},
@@ -43,10 +44,12 @@ pub fn flags(modifiers: ModifiersState, buttons: u32) -> u32 {
     flags
 }
 
-/// A key press or release, and the text a press types.
-pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState) {
+/// A key press or release, and the text a press types. `field` is whether a
+/// field of the page's has the focus.
+pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState, field: bool) {
     let flags = flags(modifiers, 0);
     let pressed = event.state == ElementState::Pressed;
+    let (native_key_code, character, unmodified_character) = native_key(event);
     host.send_key_event(Some(&CefKeyEvent {
         type_: if pressed {
             KeyEventType::RAWKEYDOWN
@@ -55,10 +58,16 @@ pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState)
         },
         modifiers: flags,
         windows_key_code: windows_key_code(event),
+        native_key_code,
         // Windows sends Alt's chords as system keys, which aren't text.
         is_system_key: i32::from(modifiers.alt_key() && !modifiers.control_key()),
+        character,
+        unmodified_character,
         ..Default::default()
     }));
+    if cfg!(target_os = "macos") && pressed && field {
+        edit(host, event, modifiers);
+    }
     // A shortcut isn't text; AltGr, which Windows reports as Control and
     // Alt together, types it.
     let shortcut = (modifiers.control_key() && !modifiers.alt_key()) || modifiers.meta_key();
@@ -71,11 +80,70 @@ pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState)
                 type_: KeyEventType::CHAR,
                 modifiers: flags,
                 windows_key_code: i32::from(unit),
+                native_key_code,
                 character: unit,
                 unmodified_character: unit,
                 ..Default::default()
             }));
         }
+    }
+}
+
+/// The key as macOS's `NSEvent` has it: its virtual key code, and its
+/// characters with and without the modifiers. CEF on macOS rebuilds the
+/// `NSEvent` from these and derives the rest from it, the Windows key code
+/// among them, and takes an event with no characters for a modifier's
+/// change [CEF key event]. Elsewhere CEF reads `windows_key_code`, and these
+/// stay unset.
+///
+/// [CEF key event]: https://github.com/chromiumembedded/cef/blob/e6035cfb35235e19ea5d5eae62c989b9ef0818dc/libcef/browser/key_event_util_mac.mm#L41-L100
+#[cfg(target_os = "macos")]
+fn native_key(event: &KeyEvent) -> (i32, u16, u16) {
+    use winit::platform::scancode::PhysicalKeyExtScancode as _;
+    let first = |text: &str| text.encode_utf16().next().unwrap_or(0);
+    let character = event.text_with_all_modifiers.as_deref().map_or(0, first);
+    let unmodified = match &event.key_without_modifiers {
+        Key::Character(text) => first(text),
+        _ => character,
+    };
+    let code = event
+        .physical_key
+        .to_scancode()
+        .map_or(0, |code| code as i32);
+    (code, character, unmodified)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_key(_: &KeyEvent) -> (i32, u16, u16) {
+    (0, 0, 0)
+}
+
+/// Cut, Copy, Paste, Select All, Undo, and Redo in a field of the page's.
+/// Blink on macOS leaves these chords to the browser's Edit menu, which
+/// Chrome has and this app leaves out [Blink editing behavior]. The page's
+/// own shortcuts leave a focused field's keys alone, so these are the
+/// field's.
+///
+/// [Blink editing behavior]: https://chromium.googlesource.com/chromium/src/+/161066f3d4245f28c30e428514ff38725b47e31c/third_party/blink/renderer/core/editing/editing_behavior.cc#171
+fn edit(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState) {
+    if !modifiers.meta_key() || modifiers.control_key() || modifiers.alt_key() {
+        return;
+    }
+    // The layout's letter, as macOS matches menu key equivalents.
+    let Key::Character(letter) = &event.key_without_modifiers else {
+        return;
+    };
+    let Some(frame) = host.browser().and_then(|browser| browser.focused_frame()) else {
+        return;
+    };
+    match (letter.as_str(), modifiers.shift_key()) {
+        ("x", false) => frame.cut(),
+        ("c", false) => frame.copy(),
+        ("v", false) => frame.paste(),
+        ("a", false) => frame.select_all(),
+        ("z", false) => frame.undo(),
+        ("z", true) => frame.redo(),
+        _ => {}
     }
 }
 
