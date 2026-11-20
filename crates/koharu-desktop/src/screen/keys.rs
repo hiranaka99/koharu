@@ -49,14 +49,8 @@ pub fn flags(modifiers: ModifiersState, buttons: u32) -> u32 {
 pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState, field: bool) {
     let flags = flags(modifiers, 0);
     let pressed = event.state == ElementState::Pressed;
-    // The key as macOS's `NSEvent` has it: its virtual key code, and its
-    // characters with and without the modifiers. CEF on macOS rebuilds the
-    // `NSEvent` from these and derives the rest from it, the Windows key code
-    // among them, and takes an event with no characters for a modifier's
-    // change [CEF key event]. Elsewhere CEF reads `windows_key_code`, and these
-    // stay unset.
-    //
-    // [CEF key event]: https://github.com/chromiumembedded/cef/blob/e6035cfb35235e19ea5d5eae62c989b9ef0818dc/libcef/browser/key_event_util_mac.mm#L41-L100
+    // CEF on macOS rebuilds the `NSEvent` from these and ignores `windows_key_code`:
+    // https://github.com/chromiumembedded/cef/blob/e6035cfb35235e19ea5d5eae62c989b9ef0818dc/libcef/browser/key_event_util_mac.mm#L41-L100
     #[cfg(target_os = "macos")]
     let (native_key_code, character, unmodified_character) = {
         use winit::platform::scancode::PhysicalKeyExtScancode as _;
@@ -89,14 +83,8 @@ pub fn send_key(host: &BrowserHost, event: &KeyEvent, modifiers: ModifiersState,
         unmodified_character,
         ..Default::default()
     }));
-    // Cut, Copy, Paste, Select All, Undo, and Redo in a field of the page's.
-    // Blink on macOS leaves these chords to the browser's Edit menu, which
-    // Chrome has and this app leaves out [Blink editing behavior]. The page's
-    // own shortcuts leave a focused field's keys alone, so these are the
-    // field's. The chord is the layout's letter, as macOS matches menu key
-    // equivalents.
-    //
-    // [Blink editing behavior]: https://chromium.googlesource.com/chromium/src/+/161066f3d4245f28c30e428514ff38725b47e31c/third_party/blink/renderer/core/editing/editing_behavior.cc#171
+    // Blink on macOS leaves Cmd+X/C/V/A/Z to the browser's Edit menu, which this app lacks:
+    // https://chromium.googlesource.com/chromium/src/+/161066f3d4245f28c30e428514ff38725b47e31c/third_party/blink/renderer/core/editing/editing_behavior.cc#171
     if cfg!(target_os = "macos")
         && pressed
         && field

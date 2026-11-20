@@ -103,14 +103,8 @@ pub fn run(context: tauri::Context<CefRuntime>) -> Result<()> {
         );
 
     let builder = tauri::Builder::<CefRuntime>::new().runtime(cef);
-    // Tauri's default macOS menu without its Edit menu [Tauri default menu].
-    // AppKit matches that menu's Undo, Redo, Cut, Copy, Paste, and Select All
-    // key equivalents before the window sees the keys, and with nothing in
-    // the window that answers their actions, the items stay disabled and
-    // swallow the chords; the page, and the edit commands the keys send a
-    // focused field, take them instead.
-    //
-    // [Tauri default menu]: https://github.com/tauri-apps/tauri/blob/323f9cb94174e37c1d80d942a9065910d00d01f2/crates/tauri/src/menu/menu.rs
+    // Drop Tauri's default Edit menu: its disabled items swallow Cmd+Z/X/C/V/A
+    // before the window sees them.
     #[cfg(target_os = "macos")]
     let builder = builder.menu(|app| {
         let menu = tauri::menu::Menu::default(app)?;
